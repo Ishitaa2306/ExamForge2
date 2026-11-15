@@ -14,6 +14,17 @@ _env_candidates = [
 ]
 _env_file = next((str(p) for p in _env_candidates if p.is_file()), ".env")
 
+# Support Streamlit Cloud secrets seamlessly
+try:
+    import streamlit as st
+    if hasattr(st, "secrets"):
+        for k, v in st.secrets.items():
+            if isinstance(v, (str, int, float, bool)) and k not in os.environ:
+                os.environ[k] = str(v)
+except Exception:
+    pass
+
+
 
 class Settings(BaseSettings):
     # Database

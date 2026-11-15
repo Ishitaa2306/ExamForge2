@@ -1,8 +1,10 @@
+import logging
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 if settings.DATABASE_URL.startswith("sqlite"):
     engine = create_engine(
@@ -22,6 +24,16 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def init_db():
+    """Ensure all database tables are created if not already present."""
+    try:
+        import app.database.models  # noqa: F401
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables verified.")
+    except Exception as exc:
+        logger.warning("Could not auto-create tables: %s", exc)
+
+
 def get_db():
     """FastAPI dependency that yields a database session and closes it afterwards."""
     db = SessionLocal()
@@ -29,3 +41,4 @@ def get_db():
         yield db
     finally:
         db.close()
+

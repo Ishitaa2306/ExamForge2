@@ -1,0 +1,33 @@
+.env
+**/.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+build/
+storage/uploads/
+storage/chroma/
+backend/storage/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python builds & eggs
+*.egg-info/
+.eggs/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Testing & Logs
+.pytest_cache/
+.coverage
+htmlcov/
+*.log

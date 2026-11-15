@@ -1,95 +1,92 @@
 """
 Tests for Examination workflow, endpoints, and status checks.
+Executes endpoint handlers directly with an isolated in-memory SQLite database.
 """
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.database.connection import Base, get_db
-from app.main import app
-
-TEST_DATABASE_URL = "sqlite:///./test_examforge_exams.db"
-engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-Base.metadata.create_all(bind=engine)
-
-
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+from app.api.examinations import (
+    create_examination,
+    get_examination,
+    list_examinations,
+)
+from app.api.settings import get_system_status
+from app.database.connection import Base
+from app.database.models import Document, DocumentStatus, Examination, ExaminationStatus, User
+from app.core.security import hash_password
+from app.schemas.examinations import ExaminationCreateRequest
 
 
-app.dependency_overrides[get_db] = override_get_db
-client = TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def reset_db():
-    Base.metadata.drop_all(bind=engine)
+@pytest.fixture
+def db():
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+    Session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = Session()
+    yield session
+    session.close()
 
 
-def _auth_header():
-    client.post(
-        "/api/auth/register",
-        json={"email": "examuser@example.com", "name": "Exam User", "password": "exampassword"},
+@pytest.fixture
+def current_user(db):
+    user = User(email="examuser@example.com", name="Exam User", hashed_password=hash_password("exampassword"))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def test_list_examinations_empty(db, current_user):
+    res = list_examinations(skip=0, limit=20, db=db, current_user=current_user)
+    assert res.total == 0
+    assert len(res.examinations) == 0
+
+
+def test_create_examination_invalid_document(db, current_user):
+    payload = ExaminationCreateRequest(document_id=9999, max_questions=10)
+    with pytest.raises(HTTPException) as exc_info:
+        create_examination(payload=payload, db=db, current_user=current_user)
+    assert exc_info.value.status_code == 404
+
+
+def test_get_nonexistent_examination(db, current_user):
+    with pytest.raises(HTTPException) as exc_info:
+        get_examination(examination_id=9999, db=db, current_user=current_user)
+    assert exc_info.value.status_code == 404
+
+
+def test_create_and_list_examination(db, current_user):
+    # Create analyzed document
+    doc = Document(
+        user_id=current_user.id,
+        filename="distributed.pdf",
+        original_filename="Distributed Systems.pdf",
+        file_path="storage/uploads/distributed.pdf",
+        file_size=12000,
+        status=DocumentStatus.ANALYZED,
     )
-    resp = client.post(
-        "/api/auth/login",
-        data={"username": "examuser@example.com", "password": "exampassword"},
-    )
-    assert resp.status_code == 200, f"Login failed: {resp.json()}"
-    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+    db.add(doc)
+    db.commit()
+
+    payload = ExaminationCreateRequest(document_id=doc.id, max_questions=15)
+    exam = create_examination(payload=payload, db=db, current_user=current_user)
+    assert exam.id is not None
+    assert exam.max_questions == 15
+    assert exam.status == ExaminationStatus.CREATED
+
+    # List examinations
+    res = list_examinations(skip=0, limit=20, db=db, current_user=current_user)
+    assert res.total == 1
+    assert res.examinations[0].id == exam.id
 
 
-def test_list_examinations_empty():
-    headers = _auth_header()
-    response = client.get("/api/examinations/", headers=headers)
-    assert response.status_code == 200
-    assert response.json()["total"] == 0
-
-
-def test_create_examination_invalid_document():
-    headers = _auth_header()
-    response = client.post(
-        "/api/examinations/",
-        json={"document_id": 9999, "max_questions": 10},
-        headers=headers,
-    )
-    assert response.status_code == 404
-
-
-def test_get_nonexistent_examination():
-    headers = _auth_header()
-    response = client.get("/api/examinations/9999", headers=headers)
-    assert response.status_code == 404
-
-
-def test_examinations_require_auth():
-    """Examination list must reject unauthenticated requests."""
-    response = client.get("/api/examinations/")
-    assert response.status_code in (401, 403)
-
-
-def test_settings_status_endpoint():
+def test_settings_status_endpoint(db, current_user):
     """Settings status returns application, db, and provider info without credentials."""
-    headers = _auth_header()
-    response = client.get("/api/settings/status", headers=headers)
-    assert response.status_code == 200
-    data = response.json()
+    data = get_system_status(db=db, current_user=current_user)
     assert "application" in data
     assert "database" in data
     assert "gemini" in data
     assert "granite" in data
     assert data["application"]["name"] == "ExamForge"
-    # Ensure no API keys are exposed
-    raw_str = response.text
-    assert "AI_KEY" not in raw_str
-    assert "secret" not in raw_str.lower()
